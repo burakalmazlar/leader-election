@@ -6,39 +6,54 @@ import java.util.Collections;
 import java.util.List;
 
 public class ServiceRegistry implements Watcher {
-
-    private static final String REGISTRY_ZNODE = "/service_registry";
-
-    private final ZooKeeper zookeeper;
-    private String currentZnode = null;
+    public static final String WORKERS_REGISTRY_ZNODE = "/workers_service_registry";
+    public static final String COORDINATORS_REGISTRY_ZNODE = "/coordinators_service_registry";
+    private final ZooKeeper zooKeeper;
     private List<String> allServiceAddresses = null;
+    private String currentZnode = null;
+    private final String serviceRegistryZnode;
 
-    public ServiceRegistry(ZooKeeper zookeper) {
-        this.zookeeper = zookeper;
-        createServiceRegistryZnode();
+    public ServiceRegistry(ZooKeeper zooKeeper, String serviceRegistryZnode) {
+        this.zooKeeper = zooKeeper;
+        this.serviceRegistryZnode = serviceRegistryZnode;
+        createServiceRegistryNode();
     }
 
-    private void createServiceRegistryZnode() {
-        try {
-            if(zookeeper.exists(REGISTRY_ZNODE, false) == null) {
-                String registryZnodePath = zookeeper.create(REGISTRY_ZNODE, new byte[]{}, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-                System.out.println("Registry Znode created " + registryZnodePath);
-            }
-        } catch (KeeperException e) {
-            e.printStackTrace();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+    public void registerToCluster(String metadata) throws KeeperException, InterruptedException {
+        if (currentZnode != null) {
+            System.out.println("Already registered to service registry");
+            return;
         }
-    }
-
-    public void registerToCluster(String metadata) throws InterruptedException, KeeperException {
-        this.currentZnode = zookeeper.create(REGISTRY_ZNODE + "/n_", metadata.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
-        System.out.println("Registered to service registry " + currentZnode);
+        this.currentZnode = zooKeeper.create(serviceRegistryZnode + "/n_", metadata.getBytes(),
+                ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+        System.out.println("Registered to service registry");
     }
 
     public void registerForUpdates() {
         try {
             updateAddresses();
+        } catch (KeeperException e) {
+        } catch (InterruptedException e) {
+        }
+    }
+
+    public void unregisterFromCluster() {
+        try {
+            if (currentZnode != null && zooKeeper.exists(currentZnode, false) != null) {
+                zooKeeper.delete(currentZnode, -1);
+            }
+        } catch (KeeperException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void createServiceRegistryNode() {
+        try {
+            if (zooKeeper.exists(serviceRegistryZnode, false) == null) {
+                zooKeeper.create(serviceRegistryZnode, new byte[]{}, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            }
         } catch (InterruptedException e) {
             e.printStackTrace();
         } catch (KeeperException e) {
@@ -46,47 +61,41 @@ public class ServiceRegistry implements Watcher {
         }
     }
 
-    public synchronized List<String> getAllServiceAddresses() throws InterruptedException, KeeperException {
-        if(this.allServiceAddresses == null){
+    public synchronized List<String> getAllServiceAddresses() throws KeeperException, InterruptedException {
+        if (allServiceAddresses == null) {
             updateAddresses();
         }
-        return this.allServiceAddresses;
+        return allServiceAddresses;
     }
 
-    public void unregisterFromCluster() throws InterruptedException, KeeperException {
-        if(currentZnode != null && zookeeper.exists(currentZnode,false) != null) {
-            zookeeper.delete(currentZnode, -1);
-        }
-    }
+    private synchronized void updateAddresses() throws KeeperException, InterruptedException {
+        List<String> workers = zooKeeper.getChildren(serviceRegistryZnode, this);
 
-    private synchronized void updateAddresses() throws InterruptedException, KeeperException {
-        List<String> workerZnodes = zookeeper.getChildren(REGISTRY_ZNODE, this);
+        List<String> addresses = new ArrayList<>(workers.size());
 
-        List<String> addresses = new ArrayList<>(workerZnodes.size());
-
-        for (String workerZnode : workerZnodes) {
-            String workerZnodeFullPath = REGISTRY_ZNODE + "/" + workerZnode;
-            Stat workerStat = zookeeper.exists(workerZnodeFullPath, false);
-            if (workerStat == null) {
+        for (String worker : workers) {
+            String serviceFullpath = serviceRegistryZnode + "/" + worker;
+            Stat stat = zooKeeper.exists(serviceFullpath, false);
+            if (stat == null) {
                 continue;
             }
-            byte [] addressBytes = zookeeper.getData(workerZnodeFullPath,false,workerStat);
+
+            byte[] addressBytes = zooKeeper.getData(serviceFullpath, false, stat);
             String address = new String(addressBytes);
             addresses.add(address);
         }
 
         this.allServiceAddresses = Collections.unmodifiableList(addresses);
-        System.out.println("The cluster address : " + this.allServiceAddresses);
+        System.out.println("The cluster addresses are: " + this.allServiceAddresses);
     }
 
     @Override
-    public void process(WatchedEvent watchedEvent) {
+    public void process(WatchedEvent event) {
         try {
             updateAddresses();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
         } catch (KeeperException e) {
-            e.printStackTrace();
+        } catch (InterruptedException e) {
         }
     }
+
 }
